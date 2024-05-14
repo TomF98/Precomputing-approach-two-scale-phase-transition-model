@@ -5,7 +5,7 @@ from scipy.sparse import csr_matrix, lil_matrix, bmat
 import time 
 from petsc4py import PETSc
 
-from cell_problem import CellProblem
+from MicroProblems.cell_problem import CellProblem
 
 ### Problem parameters
 kappa_macro = 0.1

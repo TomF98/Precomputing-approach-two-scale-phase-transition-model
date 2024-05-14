@@ -6,8 +6,8 @@ from scipy import sparse
 import time 
 from petsc4py import PETSc
 
-from cell_problem import CellProblem
-from effective_diffusion_fn import diffusion_compute
+from MicroProblems.cell_problem import CellProblem
+from MicroProblems.effective_diffusion_fn import diffusion_compute
 
 for c_dt in [0.05]:
     for c_res in [8]: 

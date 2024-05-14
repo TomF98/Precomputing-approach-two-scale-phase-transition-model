@@ -10,7 +10,7 @@ import numpy as np
 
 from dolfin import *
 
-from cell_problem import CellProblemParallel
+from MicroProblems.cell_problem import CellProblemParallel
 
 # %%
 ### Parallel parameters

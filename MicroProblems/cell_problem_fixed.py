@@ -1,9 +1,10 @@
 from dolfin import *
 
-from scipy.sparse import csr_matrix
-
 class TransformConvection(UserExpression):
-
+    """
+    Circle growth direction. Since the center is at (0, 0) the movement is 
+    equal to the position.
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -14,21 +15,37 @@ class TransformConvection(UserExpression):
     def value_shape(self):
         return (2,)
 
+
 class CellProblemFixed():
 
     def __init__(self, initial_mesh, kappa, f, v, 
                  ref_temp, start_temp, time_step, initial_radius, rho_micro):
         """
-        initial_mesh : The cell mesh at the start
-        kappa : heat conductivity
-        f : heat source
-        v : speed of movement
-        ref_temp : Reference temperature for growing 
-        start_temp : Initial temperature
-        time_step : size of the current time step
-        initial_radius : radius at the start
+        A class to represent one cell problem at a macroscopic position. Here,
+        the transformation on a fixed domain is applied.
+
+        Parameters
+        ==========
+        initial_mesh : Mesh
+            The cell mesh. 
+        kappa : float
+            The heat conductivity inside the cells.
+        f : function, float
+            The heat source.
+        v : float
+            A scalar to scale the speed of the boundary movement.
+        ref_temp : float
+            The reference temperature for growing. 
+        start_temp : float 
+            The initial temperature.
+        time_step : float 
+            The size of the current time step.
+        initial_radius : float
+            The radius of domain at the start.
+        rhi_micro : float
+            The denisity of the
         """
-        self.cell_mesh = Mesh(initial_mesh)
+        self.cell_mesh = initial_mesh #Mesh(initial_mesh)
         self.kappa = Constant(kappa)
         self.f = f
         self.current_radius = initial_radius
@@ -49,10 +66,12 @@ class CellProblemFixed():
 
         V_micro_vec = VectorFunctionSpace(self.cell_mesh, "CG", 1)
         identity_fn = interpolate(TransformConvection(), V_micro_vec)
+
         ### Micro problem
         phi_micro = TestFunction(self.V_micro)
         u_micro = TrialFunction(self.V_micro)
 
+        ## Tranform to reference circle:
         self.density_scale = Constant((self.current_radius/self.initial_radius)**2)
         self.old_density_scale = Constant((self.current_radius/self.initial_radius)**2)
         self.convection_scale = Constant(self.growth_factor * self.current_radius/(self.initial_radius**2))
@@ -63,28 +82,23 @@ class CellProblemFixed():
         self.a_micro *= self.dx_micro
         
         self.f_micro = self.density_scale * inner(self.f, phi_micro) 
-        self.f_micro += self.rho_micro * self.old_density_scale/self.time_step \
-                             * inner(self.theta_old, phi_micro) 
+        self.f_micro += self.rho_micro * self.old_density_scale/self.time_step * inner(self.theta_old, phi_micro) 
         self.f_micro *= self.dx_micro
 
-        # Only dummy bc to set the entries in the matrix to 1 and the rhs to 0
-        # and build a vector that contains 1 and the boundary dofs for the macro
-        # coupling
+        # A dummy BC to set entries in the systm matrix to 1 and the rhs to 0.
+        # Additionally, build a vector that contains 1 and the boundary dofs for the macro
+        # coupling.
         self.bc_micro_zero = DirichletBC(self.V_micro, Constant(0.0), "on_boundary")
         self.bc_micro_lhs = DirichletBC(self.V_micro, Constant(-1.0), "on_boundary")
 
-        # For heat transfer to macro domain
+        # For heat transfer to macro domain, we need the flow at the boundary:
         flow_scale = Constant(self.kappa)
-        self.micro_transfer = inner(flow_scale * grad(phi_micro), 
-                                    self.n_micro) * self.ds_micro
-
+        self.micro_transfer = inner(flow_scale * grad(phi_micro), self.n_micro) * self.ds_micro
         self.heat_exchange = assemble(self.micro_transfer).get_local()
 
         # For the Dirichlet coupling with the macro domain
         self.BC_helper = PETScVector(MPI.comm_self)
-
         assemble(Constant(0.0)*phi_micro*self.dx_micro, self.BC_helper)
-
         self.bc_micro_lhs.apply(self.BC_helper)
 
         self.first_step = True
@@ -107,14 +121,12 @@ class CellProblemFixed():
     
 
     def update_cell(self, macro_temp, micro_temp):
-        self.old_density_scale.assign(
-            (self.current_radius/self.initial_radius)**2)
+        self.old_density_scale.assign((self.current_radius/self.initial_radius)**2)
         
         self.theta_old.vector().set_local(micro_temp)
-        self.current_energy = self.rho_micro \
-            *assemble(self.old_density_scale*self.theta_old * self.dx_micro)
+        self.current_energy = self.rho_micro * assemble(self.old_density_scale*self.theta_old * self.dx_micro)
         
-        # radius is explicity given by current macro temperature
+        # Radius is explicity given by current macro temperature
         self.growth_factor = self.speed * (macro_temp - self.ref_temp)
         self.current_radius += self.time_step * self.growth_factor
 

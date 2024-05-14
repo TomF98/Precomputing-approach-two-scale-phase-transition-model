@@ -1,6 +1,10 @@
 from dolfin import *
-import numpy as np
 import mshr
+
+"""
+Code to compute the effective conductivty "on the fly". 
+Does not work in parallel. 
+"""
 
 class PeriodicBC(SubDomain):
 
@@ -23,11 +27,11 @@ class PeriodicBC(SubDomain):
             y[1] -= 1.0
 
 
-def diffusion_compute(radius, res=64):
+def diffusion_compute(radius, res=128):
     e_j = Constant((1.0, 0.0)) # since we have circle, direction does not matter
 
     ######################
-    ### Domain and measure
+    ### Domain, measure and weak form
     circle = mshr.Circle(Point(0.0, 0.0), radius)
     box = mshr.Rectangle(Point(-0.5, -0.5), Point(0.5, 0.5))
     domain_mesh = mshr.generate_mesh(box - circle, res)
@@ -47,11 +51,11 @@ def diffusion_compute(radius, res=64):
 
     f = -inner(e_j, grad(v)) * dx
 
+    # Solve:
     w = Function(W)
-
-    solve(a==f, w)#, solver_parameters={'linear_solver' : 'mumps'})
-
+    solve(a==f, w)
     u0, _ = w.split()
 
+    # Compute vale (for circle only scalar)
     diffusion_scale = assemble(inner((grad(u0) + e_j), Constant((1, 0)))*dx)
     return diffusion_scale

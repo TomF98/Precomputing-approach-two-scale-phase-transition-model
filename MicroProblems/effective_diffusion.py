@@ -1,20 +1,22 @@
 """
-Solve the helper problem, that defines the macroscopic diffusion, before hand
-for different cell sizes and then in the final algorithm just use a look up table
+Solve the helper problem, that defines the macroscopic diffusion.
+The values are precomputed for cell sizes and later only looked up (interpolated)
 """
 from dolfin import *
 import numpy as np
 import mshr
 
-res = 256
+res = 256 # mesh resolution
+N = 320 # number of precompute values
+
 j = 0
 if j == 0:
     e_j = Constant((1.0, 0.0))
 else:
     e_j = Constant((0.0, 1.0))
 
-results = np.zeros((200, 2))
-radius_list = np.linspace(0.01, 0.495, len(results))
+results = np.zeros((N, 2)) # Entires contain: radius | value
+radius_list = np.linspace(0.005, 0.495, len(results))
 counter = 0
 
 for radius in radius_list:
@@ -67,7 +69,7 @@ for radius in radius_list:
 
     w = Function(W)
 
-    solve(a==f, w)#, solver_parameters={'linear_solver' : 'mumps'})
+    solve(a==f, w)
 
     u0, _ = w.split()
 
@@ -84,16 +86,21 @@ for radius in radius_list:
     #print("Without volume")
     #print("entry "+ str(j+1) + ",1 :", assemble(inner((grad(u0) + e_j), Constant((1, 0, 0)))*dx))
     #print("entry "+ str(j+1) + ",2 :", assemble(inner((grad(u0) + e_j), Constant((0, 1, 0)))*dx))
-    filev = File("chi.pvd")
+    
+    filev = File("TestResults/chi_" + str(radius) + ".pvd")
     filev << u0
 
     results[counter, 0] = radius
     results[counter, 1] = diffusion_scale
     counter += 1
 
-np.save("effective_conductivity__512.npy", results)
-#results = np.load("Data/effective_conductivity_512.npy")
+
+np.save("Data/effective_conductivity_res_" + str(N) + ".npy", results)
+
+## Show coefficient curve
 import matplotlib.pyplot as plt
 plt.plot(results[:, 0], results[:, 1])
 plt.grid()
+plt.xlabel("Radius")
+plt.ylabel(r"$K_{11}$")
 plt.show()

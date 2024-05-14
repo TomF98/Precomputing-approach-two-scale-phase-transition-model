@@ -10,7 +10,7 @@ import numpy as np
 
 from dolfin import *
 
-from cell_problem_fixed import CellProblemFixed
+from MicroProblems.cell_problem_fixed import CellProblemFixed
 
 # %%
 ### Parallel parameters
@@ -48,7 +48,7 @@ macro_size_y = 1
 micro_radius = 0.2
 growth_speed = 0.1
 
-res_macro = 16
+res_macro = 32
 
 ## Effective conductivity
 eff_cond_array = np.load(path_to_data_folder + "/effective_conductivity.npy")
