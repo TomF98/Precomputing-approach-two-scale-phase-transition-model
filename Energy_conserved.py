@@ -1,6 +1,5 @@
 import sys
 import petsc4py
-from petsc4py import PETSc
 petsc4py.init(sys.argv) # needs to be done to run in parallel...
 
 import time
@@ -11,6 +10,12 @@ import numpy as np
 from dolfin import *
 
 from MicroProblems.cell_problem_fixed import CellProblemFixed
+from Utils.helper_functions import create_scatter_idx, BuildMacroMatrix, BuildMicroMatrix, SolveSystem
+
+"""
+Computes for a simple setup the expected and numeric energy, to check if macro domain
+and cells are correctly coupled.
+"""
 
 # %%
 ### Parallel parameters
@@ -30,12 +35,12 @@ rho_macro = 1.0
 rho_micro = 1.0
 
 theta_ref = 0.0
-theta_start = 0.0
+theta_start = theta_ref
 f_macro_prod = Expression("2.0*x[0]", degree=1)
 f_micro_prod = Constant(0.0)
 
 T_int = [0, 2.0]
-dt = 0.25
+dt = 0.1
 t_n = T_int[0]
 
 prod_stop = 0.5
@@ -49,9 +54,12 @@ micro_radius = 0.2
 growth_speed = 0.1
 
 res_macro = 32
+res_micro = 0.05
 
 ## Effective conductivity
-eff_cond_array = np.load(path_to_data_folder + "/effective_conductivity.npy")
+cond_res = 40
+interpolate_cond = True # use linear interpolation (else piecewise constant)
+eff_cond_array = np.load(path_to_data_folder + "/effective_conductivity_res_" + str(cond_res) + ".npy")
 
 ### Files to save solution data
 energy_file             = File(path_to_save_folder + "/micro_energy_flow.pvd")
@@ -59,18 +67,20 @@ sol_file                = File(path_to_save_folder + "/macro_solution.pvd")
 macro_cond_scale_file   = File(path_to_save_folder + "/macro_cond_scale.pvd")
 radius_file             = File(path_to_save_folder + "/radius_file.pvd")
 av_cell_temp_file       = File(path_to_save_folder + "/average_cell_temp.pvd")
-cell_temp_file          = File(path_to_save_folder + "/example_cell_temp.pvd") 
 
-cell_save_idx = res_macro**2 - 3
+cell_save_idx = [0, 100, res_macro**2-1] # values between 0 and res_macro**2-1 
+cell_save_dic = {}
+for i in cell_save_idx:
+    cell_save_dic[i] = File(path_to_save_folder + "/example_cell_temp_idx_" + str(i) + ".pvd") 
+
 # %%
 ### Load/create mesh, function space and determine the splitting of dofs
 ### over all processecs
 macro_mesh = UnitSquareMesh(MPI.comm_self, res_macro, res_macro) # is global
 
 ### Micro mesh and cell problems per process
-#micro_mesh = UnitSquareMesh(MPI.comm_self, res_macro, res_macro)
 micro_mesh = Mesh(MPI.comm_self)
-with XDMFFile(MPI.comm_self, path_to_mesh_folder + "/micro_domain.xdmf") as infile:
+with XDMFFile(MPI.comm_self, path_to_mesh_folder + "/micro_domain_res_" + str(res_micro) + ".xdmf") as infile:
     infile.read(micro_mesh)
 
 ## Dofs (only in case of linear function spaces)
@@ -87,39 +97,15 @@ dof_split = int(dofs_macro / (num_of_processes - 1))
 ## if we cant perfectly devide
 if rank == 0:
     dofs_macro_local = dofs_macro
-    print(rank, dofs_macro)
-    print("dofs micro", dofs_micro)
+    print("Dofs macro domain", dofs_macro)
+    print("Dofs of each micro cell", dofs_micro)
+    print("Cells per process:")
 elif rank < num_of_processes - 1: 
     dofs_macro_local = dof_split
     print(rank, dofs_macro_local)
 elif rank == num_of_processes - 1:
     dofs_macro_local = dofs_macro  - (num_of_processes - 2) * dof_split
     print(rank, dofs_macro_local)
-
-## For scattering later on, we define what data section each process gets
-## back from process 0
-def create_scatter_idx(df_macro, df_micro, n_processes, df_split, global_idx=True):
-    last_process_dofs = df_macro  - (n_processes - 2) * df_split
-    
-    if global_idx:
-        range_list = [df_split*df_micro] * n_processes  
-        range_list[-1] = last_process_dofs*df_micro
-    else:
-        range_list = [df_split] * n_processes  
-        range_list[-1] = last_process_dofs        
-    range_list[0] = df_macro
-
-    displacement_list = []
-    for j in range(n_processes):
-        if j == 0:
-            displacement_list.append(0)
-        else:
-            if global_idx:
-                displacement_list.append(df_macro + (j-1)*df_split*df_micro) 
-            else:
-                displacement_list.append((j-1)*df_split) 
-    
-    return range_list, displacement_list
 
 global_range_list, global_displacement_list = create_scatter_idx(
                     dofs_macro, dofs_micro, num_of_processes, dof_split)
@@ -216,7 +202,7 @@ comm.barrier()
 ### 5) Save data
 
 first_time_step = True # some stuff stays the same between iterations
-
+dirichlet_coupling_data = None
 while t_n <= T_int[1] - dt/8.0:
     t_n += dt
     ### 1) Build matrix
@@ -231,86 +217,18 @@ while t_n <= T_int[1] - dt/8.0:
 
         ## Build matrix
         start_time = time.time()
-        A_macro, F_macro = assemble_system(a_macro, f_macro)
-
-        non_zero_rows, non_zero_cols = np.nonzero(A_macro.array())
-        non_zero_data = A_macro.array()[non_zero_rows, non_zero_cols]
-        #print(non_zero_data)
-
-        dirichlet_coupling_idx = np.nonzero(dummy_dirichlet_helper)[0]
-        len_coupling = len(dirichlet_coupling_idx)
-        if first_time_step:
-            dirichlet_coupling_rows = np.zeros(len_coupling * dofs_macro, dtype=np.int32)
-            dirichlet_coupling_cols = np.zeros(len_coupling * dofs_macro, dtype=np.int32)
-            dirichlet_coupling_data = np.zeros(len_coupling * dofs_macro)
-            for dof in range(dofs_macro):
-                dirichlet_coupling_rows[dof * len_coupling : (dof+1) * len_coupling] = \
-                    dirichlet_coupling_idx + dof * dofs_micro + dofs_macro
-                dirichlet_coupling_cols[dof * len_coupling : (dof+1) * len_coupling] = dof
-                dirichlet_coupling_data[dof * len_coupling : (dof+1) * len_coupling] = -1
-
-        if first_time_step:
-            non_zero_rows = np.concatenate((non_zero_rows, dirichlet_coupling_rows), dtype=np.int32)
-            non_zero_cols = np.concatenate((non_zero_cols, dirichlet_coupling_cols), dtype=np.int32)
-        non_zero_data = np.concatenate((non_zero_data, dirichlet_coupling_data))
-
-        rhs_vec = F_macro.get_local() 
+        non_zero_rows, non_zero_cols, non_zero_data, rhs_vec, dirichlet_coupling_data = \
+            BuildMacroMatrix(dofs_micro, dofs_macro, a_macro, f_macro, 
+                             dummy_dirichlet_helper, first_time_step, 
+                             dirichlet_coupling_data) 
 
     ### Cell problems
     else:
         ## Assemble cells on other process including coupling back
         ## to the macro scale
-        read_idx_shift = dofs_macro + (rank - 1) * dof_split
-        idx_shift = dofs_macro + (rank - 1) * dof_split * dofs_micro
-
-        micro_problem_list[0].assemble_matrix_block()
-        heat_exchange_idx = np.nonzero(micro_problem_list[0].heat_exchange)[0]
-
-        non_zero_rows = []
-        non_zero_cols = []
-        
-        # this has to be compute in each iteration
-        non_zero_data = []
-        rhs_vec = []
-
-        for counter in range(dofs_macro_local):
-            # Diagonal block for cell problem 
-
-            micro_problem_list[counter].assemble_matrix_block()
-
-            if counter == 0: # only once at the start
-                cell_non_zero_rows, cell_non_zero_cols = \
-                    np.nonzero(micro_problem_list[counter].M_micro.array())
-
-            if first_time_step:
-                non_zero_rows.append(cell_non_zero_rows + idx_shift + counter * dofs_micro)
-                non_zero_cols.append(cell_non_zero_cols + idx_shift + counter * dofs_micro)
-            non_zero_data.append(
-                micro_problem_list[counter].M_micro.array()[cell_non_zero_rows, 
-                                                            cell_non_zero_cols])
-            
-            ## rhs of cell problem
-            rhs_vec.append(micro_problem_list[counter].F_micro.get_local())
-
-            ## Coupling from micro to macro
-            coupling_dofs, mass_values = global_mass_matrix.getrow(
-                                            read_idx_shift + counter - dofs_macro)
-
-            dof_counter = 0
-            for couple_dof in coupling_dofs:
-                if first_time_step:
-                    non_zero_rows.append(np.ones_like(heat_exchange_idx) * couple_dof)
-                    non_zero_cols.append(heat_exchange_idx + idx_shift + counter * dofs_micro)
-                non_zero_data.append(
-                    mass_values[dof_counter] * micro_problem_list[counter].heat_exchange[heat_exchange_idx])
-
-                dof_counter += 1
-
-        if first_time_step:
-            non_zero_rows = np.concatenate(non_zero_rows, dtype=np.int32)
-            non_zero_cols = np.concatenate(non_zero_cols, dtype=np.int32)
-        non_zero_data = np.concatenate(non_zero_data)
-        rhs_vec = np.concatenate(rhs_vec)
+        non_zero_rows, non_zero_cols, non_zero_data, rhs_vec = \
+            BuildMicroMatrix(rank, dofs_micro, dofs_macro, dof_split, dofs_macro_local, 
+                             global_mass_matrix, micro_problem_list, first_time_step)
 
     # %%
     #print(rank, "waiting for block matrix creation")
@@ -349,44 +267,12 @@ while t_n <= T_int[1] - dt/8.0:
         # sparse.save_npz("matrix_p.npz", M_macro)
         # exit()
 
-
-    #print(rank, "building matrix, waiting...")
     comm.barrier()
 
     #%%
     ### 2) Start solving 
     if rank == 0:
-        ### Building is easier with scipy (docu not clear with PETSc)
-        ### but solving is faster with PETSc. (Transformation is also fast)
-        petsc_vec = PETSc.Vec()
-        petsc_vec.create(PETSc.COMM_SELF)
-        petsc_vec.setSizes(dofs_macro * (1 + dofs_micro))
-        petsc_vec.setUp()
-
-        u_sol_petsc = PETSc.Vec()
-        u_sol_petsc.create(PETSc.COMM_SELF)
-        u_sol_petsc.setSizes(dofs_macro * (1 + dofs_micro))
-        u_sol_petsc.setUp()
-
-        petsc_mat = PETSc.Mat().createAIJ(size=M_macro.shape, 
-                csr=(M_macro.indptr, M_macro.indices, M_macro.data), 
-                comm=PETSc.COMM_SELF)
-
-        print("building matrix took", time.time() - start_time)
-
-        ## Select solver
-        solver = PETSc.KSP().create(PETSc.COMM_SELF)
-        solver.setOperators(petsc_mat)
-        solver.setType(PETSc.KSP.Type.GMRES) #PREONLY
-        #solver.getPC().setType(PETSc.PC.Type.LU)
-
-        petsc_vec.array[:] = global_rhs_vec
-
-        print("Start solving")
-        start_time = time.time()
-        solver.solve(petsc_vec, u_sol_petsc)
-        print("Solving is done, took", time.time()- start_time)
-
+        u_sol_petsc = SolveSystem(dofs_micro, dofs_macro, global_rhs_vec, M_macro, start_time)
         solution_array = u_sol_petsc.array
         macro_array = solution_array[:dofs_macro]
     else:
@@ -414,7 +300,7 @@ while t_n <= T_int[1] - dt/8.0:
         sol_fn.vector().set_local(macro_solution_array)
 
         data_for_macro_domain = np.zeros((1, 2)) # dummy
-
+        print("Waiting for update of cells")
     else:
         ## Data to send to the macro domain:
         ## current temperature intergral, radius after cell movement
@@ -428,10 +314,9 @@ while t_n <= T_int[1] - dt/8.0:
             data_for_macro_domain[i, 0] = micro_problem_list[i].current_energy
             data_for_macro_domain[i, 1] = micro_problem_list[i].current_radius
             #print(cell_save_idx, i + read_idx_shift)
-            if i + (rank - 1) * dof_split == cell_save_idx:
-                cell_temp_file << (micro_problem_list[i].theta_old, t_n)
+            if (i + (rank - 1) * dof_split) in cell_save_dic:
+                cell_save_dic[i + (rank - 1) * dof_split] << (micro_problem_list[i].theta_old, t_n)
 
-    print(rank, "waiting for update of cells")
     comm.barrier()
 
     #%%

@@ -7,7 +7,7 @@ import numpy as np
 import mshr
 
 res = 256 # mesh resolution
-N = 320 # number of precompute values
+N = 20 # number of precompute values
 
 j = 0
 if j == 0:
