@@ -1,23 +1,16 @@
-==========================================================================================
 Implementation for the Paper: Precomputing approach for a two-scale phase transition model
 ==========================================================================================
 
-This repository contains the source codes for all simulations presented in the `paper`_.
+This repository contains the source codes for all simulations presented in the [paper](...).
 
 To run the code, the following packages are mandatory:
 
-- `FEniCS`_
-- `Gmsh`_
-- `SciPy`_
-- `meshio`_
+- [FEniCS](https://fenicsproject.org/)
+- [Gmsh](https://pypi.org/project/gmsh/)
+- [SciPy](https://scipy.org/install/)
+- [meshio](https://pypi.org/project/meshio/)
 
 An example environment is provided in the ``environment.yml``.
-
-.. _`paper`: ...
-.. _`FEniCS`: https://fenicsproject.org/
-.. _`Gmsh`: https://pypi.org/project/gmsh/
-.. _`SciPy`: https://scipy.org/install/
-.. _`meshio`: https://pypi.org/project/meshio/
 
 
 Usage:
@@ -40,4 +33,4 @@ The remaining strucutre of this repository is as follows:
 Example Solution
 ================
 
-![](https://github.com/TomF98/Precomputing-approach-for-a-two-scale-phase-transition-mode/blob/master/Utils/output.gif)
+![](https://github.com/TomF98/Precomputing-approach-two-scale-phase-transition-model/blob/master/Utils/output.gif)
