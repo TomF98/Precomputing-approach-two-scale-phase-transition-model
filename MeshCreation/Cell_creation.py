@@ -6,7 +6,7 @@ import sys
 
 ### Build the cell domains (circles)
 radius = 0.25
-res = 0.05
+res = 0.0175
 show_mesh = True
 
 gmsh.initialize()
@@ -18,7 +18,7 @@ gmsh.model.occ.synchronize()
 
 gmsh.model.addPhysicalGroup(2, [2, circle], 0, name="domain")
 gmsh.option.setNumber('Mesh.MeshSizeMax', res)
-
+gmsh.option.setNumber('Mesh.MeshSizeMin', res)
 gmsh.model.mesh.generate(2)
 gmsh.write("MeshCreation/micro_domain_res_" + str(res) + ".msh")
 

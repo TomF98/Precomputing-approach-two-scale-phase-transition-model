@@ -1,13 +1,14 @@
 """
-Solve the helper problem, that defines the macroscopic diffusion.
+Solve the cell problem, that defines the macroscopic diffusion.
 The values are precomputed for cell sizes and later only looked up (interpolated)
 """
 from dolfin import *
 import numpy as np
 import mshr
 
-res = 256 # mesh resolution
-N = 20 # number of precompute values
+res = 1000 # fines resolution was 2500 => H_cell=5.e-4
+N = 320 # number of precompute values
+save_data = True
 
 j = 0
 if j == 0:
@@ -16,7 +17,7 @@ else:
     e_j = Constant((0.0, 1.0))
 
 results = np.zeros((N, 2)) # Entires contain: radius | value
-radius_list = np.linspace(0.005, 0.495, len(results))
+radius_list = np.linspace(0.01, 0.495, len(results))
 counter = 0
 
 for radius in radius_list:
@@ -29,7 +30,7 @@ for radius in radius_list:
     facet_markers = 0
 
     dx = Measure("dx", domain_mesh)
-
+    print(domain_mesh.hmax())
     #####################
     ### Functionspace stuff
     class PeriodicBC(SubDomain):
@@ -87,20 +88,21 @@ for radius in radius_list:
     #print("entry "+ str(j+1) + ",1 :", assemble(inner((grad(u0) + e_j), Constant((1, 0, 0)))*dx))
     #print("entry "+ str(j+1) + ",2 :", assemble(inner((grad(u0) + e_j), Constant((0, 1, 0)))*dx))
     
-    filev = File("TestResults/chi_" + str(radius) + ".pvd")
-    filev << u0
+    # filev = File("TestResults/chi_" + str(radius) + ".pvd")
+    # filev << u0
 
     results[counter, 0] = radius
     results[counter, 1] = diffusion_scale
     counter += 1
 
 
-np.save("Data/effective_conductivity_res_" + str(N) + ".npy", results)
+if save_data:
+    np.save("Data/lower_effective_conductivity_res_" + str(N) + ".npy", results)
 
-## Show coefficient curve
-import matplotlib.pyplot as plt
-plt.plot(results[:, 0], results[:, 1])
-plt.grid()
-plt.xlabel("Radius")
-plt.ylabel(r"$K_{11}$")
-plt.show()
+    ## Show coefficient curve
+    import matplotlib.pyplot as plt
+    plt.plot(results[:, 0], results[:, 1])
+    plt.grid()
+    plt.xlabel("Radius")
+    plt.ylabel(r"$K_{11}$")
+    plt.show()

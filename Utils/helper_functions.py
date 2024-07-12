@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.interpolate import interp1d, PchipInterpolator
 import time
 from petsc4py import PETSc
 from dolfin import *
@@ -45,6 +46,36 @@ def create_scatter_idx(df_macro, df_micro, n_processes, df_split, global_idx=Tru
     return range_list, displacement_list
 
 
+def interpolate_conductivity(current_radius, radius_values, cond_values, linear_interpolation : bool,
+                             quadratic_interpolation : bool):
+    """ Does the interpolation for the precomputing.
+
+    Parameters
+    ==========
+    current_radius : np.array
+        The current local radius values of the micro cells.
+    radius_values : np.array
+        The array containing the radius-values used for the precomputing.
+    cond_values : np.array
+        The coressponding effective conducitivity values for the given radius.
+    linear_interpolation : bool
+        Wheter linear interpolation should be used.
+    quadratic_interpolation : bool
+        Wheter quadratic interpolation should be used. If neither linear nor 
+        quadratic we use piece wise continuous.
+    """
+    if linear_interpolation:
+        return np.interp(current_radius, radius_values, cond_values)
+    
+    if quadratic_interpolation:
+        f = interp1d(radius_values, cond_values, kind="quadratic", bounds_error=False,
+                    fill_value=(cond_values[0], cond_values[-1]))
+    else:
+        f = interp1d(radius_values, cond_values, kind="zero", bounds_error=False,
+                    fill_value=(cond_values[0], cond_values[-1]))
+    return f(current_radius)
+
+
 def BuildMacroMatrix(dofs_micro, dofs_macro, a_macro, f_macro, dummy_dirichlet_helper, first_time_step,
                      dirichlet_coupling_data=None):
     """
@@ -72,6 +103,7 @@ def BuildMacroMatrix(dofs_micro, dofs_macro, a_macro, f_macro, dummy_dirichlet_h
     non_zero_data = A_macro.array()[non_zero_rows, non_zero_cols]
     #print(non_zero_data)
 
+    # Find Dirichelt coupling indicies on micro mesh
     dirichlet_coupling_idx = np.nonzero(dummy_dirichlet_helper)[0]
     len_coupling = len(dirichlet_coupling_idx)
     if first_time_step:
@@ -122,10 +154,10 @@ def BuildMicroMatrix(rank, dofs_micro, dofs_macro, dof_split, dofs_macro_local,
                 micro_problem_list[counter].M_micro.array()[cell_non_zero_rows, 
                                                             cell_non_zero_cols])
             
-            ## rhs of cell problem
+        ## rhs of cell problem
         rhs_vec.append(micro_problem_list[counter].F_micro.get_local())
 
-            ## Coupling from micro to macro
+        ## Coupling from micro to macro
         coupling_dofs, mass_values = global_mass_matrix.getrow(
                                             read_idx_shift + counter - dofs_macro)
 
@@ -148,10 +180,7 @@ def BuildMicroMatrix(rank, dofs_micro, dofs_macro, dof_split, dofs_macro_local,
     return non_zero_rows, non_zero_cols, non_zero_data, rhs_vec
 
 
-def SolveSystem(dofs_micro, dofs_macro, global_rhs_vec, M_macro, start_time):
-
-    ### Building is easier with scipy.
-    ### But solving is faster with PETSc. (Transformation is fast)
+def CreateSolver(dofs_micro, dofs_macro):
     petsc_vec = PETSc.Vec()
     petsc_vec.create(PETSc.COMM_SELF)
     petsc_vec.setSizes(dofs_macro * (1 + dofs_micro))
@@ -160,20 +189,25 @@ def SolveSystem(dofs_micro, dofs_macro, global_rhs_vec, M_macro, start_time):
     u_sol_petsc = PETSc.Vec()
     u_sol_petsc.create(PETSc.COMM_SELF)
     u_sol_petsc.setSizes(dofs_macro * (1 + dofs_micro))
-    u_sol_petsc.setUp()
+    u_sol_petsc.setUp()  
 
+    solver = PETSc.KSP().create(PETSc.COMM_SELF)
+    solver.setType(PETSc.KSP.Type.GMRES) #PREONLY
+    #solver.getPC().setType(PETSc.PC.Type.LU)
+
+    return petsc_vec, u_sol_petsc, solver
+
+
+def SolveSystem(petsc_vec, u_sol_petsc, solver, global_rhs_vec, M_macro, start_time):
+    ### Building is easier with scipy.
+    ### But solving is faster with PETSc. (Transformation is fast)
     petsc_mat = PETSc.Mat().createAIJ(size=M_macro.shape, 
                 csr=(M_macro.indptr, M_macro.indices, M_macro.data), 
                 comm=PETSc.COMM_SELF)
 
     print("building matrix took", time.time() - start_time)
 
-    ## Select solver
-    solver = PETSc.KSP().create(PETSc.COMM_SELF)
     solver.setOperators(petsc_mat)
-    solver.setType(PETSc.KSP.Type.GMRES) #PREONLY
-    #solver.getPC().setType(PETSc.PC.Type.LU)
-
     petsc_vec.array[:] = global_rhs_vec
 
     print("Start solving")

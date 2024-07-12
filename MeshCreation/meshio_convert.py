@@ -8,7 +8,7 @@ def create_mesh(mesh, cell_type, prune_z=False):
         out_mesh.points = out_mesh.points[:, :2] # remove third dimension
     return out_mesh
 
-res = 0.05
+res = 0.004375
 
 msh=meshio.read("MeshCreation/micro_domain_res_" + str(res) + ".msh")
 

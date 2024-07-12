@@ -12,11 +12,9 @@ from dolfin import *
 from MicroProblems.cell_problem_fixed import CellProblemFixed
 from Utils.helper_functions import (create_scatter_idx, BuildMacroMatrix, BuildMicroMatrix, 
                                     SolveSystem, interpolate_conductivity, CreateSolver)
-
+from Utils.heat_soruce import HeatSource
 """
-Computes, for a simple setup, the expected and numeric energy, to check if macro domain
-and cells are correctly coupled and energy is preserved.
-Here, now latent heat is applied.
+The main implementation for the code examples.
 """
 
 # %%
@@ -25,7 +23,7 @@ comm = pyMPI.COMM_WORLD
 rank = comm.Get_rank()
 num_of_processes = comm.Get_size()
 
-path_to_save_folder = "Results/EnergyTest"
+path_to_save_folder = "Results/Example"
 path_to_data_folder = "InterpolationData"
 path_to_mesh_folder = "MeshCreation"
 
@@ -38,15 +36,16 @@ rho_micro = 1.0
 
 theta_ref = 0.0
 theta_start = theta_ref
-f_macro_prod = Expression("2.0*x[0]", degree=1)
-f_micro_prod = Constant(0.0)
 
-T_int = [0, 2.0]
+T_int = [0, 10.0]
 dt = 0.1
 t_n = T_int[0]
+prod_stop = 5.0
 
-prod_stop = 0.5
-f_stopper = Constant(1.0) # at start 1, if 0 no production
+f_macro_prod = HeatSource(t_n, prod_stop, 0.75)
+f_micro_prod = Constant(0.0)
+
+latent_heat = 2*np.pi
 
 ### Domain parameters
 macro_size_x = 1
@@ -57,13 +56,13 @@ micro_radius += dt * theta_start # extrapolate radius at first step
 growth_speed = 0.1 # additional parameter to controll growth of cells
 
 res_macro = 32
-res_micro = 0.1
+res_micro = 0.05
 
 ## Effective conductivity
-cond_res = 40
-use_quadratic_interpolation = 0 # use quadratic interpolation 
-use_linear_interpolation = 1 # use linear interpolation (else piecewise constant)
-eff_cond_array = np.load(path_to_data_folder + "/effective_conductivity_res_" + str(cond_res) + ".npy")
+cond_res = 320 # resolution of precompute
+use_quadratic_interpolation = False # use qudratic interpolation (else piecewise constant)
+use_linear_interpolation = True # use linear interpolation (else piecewise constant)
+eff_cond_array = np.load(path_to_data_folder + "/higher_res_effective_conductivity_res_" + str(cond_res) + ".npy")
 
 ### Files to save solution data
 energy_file             = File(path_to_save_folder + "/micro_energy_flow.pvd")
@@ -74,8 +73,6 @@ av_cell_temp_file       = File(path_to_save_folder + "/average_cell_temp.pvd")
 
 cell_save_idx = [0, 100, res_macro**2-1] # values between 0 and res_macro**2-1 
 cell_save_dic = {}
-for i in cell_save_idx:
-    cell_save_dic[i] = File(path_to_save_folder + "/example_cell_temp_idx_" + str(i) + ".pvd") 
 
 # %%
 ### Load/create mesh, function space and determine the splitting of dofs
@@ -95,9 +92,14 @@ micro_mesh = Mesh(MPI.comm_self)
 with XDMFFile(MPI.comm_self, path_to_mesh_folder + "/micro_domain_res_" + str(res_micro) + ".xdmf") as infile:
     infile.read(micro_mesh)
 
+
 ## Dofs (only in case of linear function spaces)
 dofs_micro = len(micro_mesh.coordinates())
 dofs_macro = len(macro_mesh.coordinates())
+
+print("Mesh size")
+print("Macro", macro_mesh.hmax())
+print("Micro", micro_mesh.hmax())
 
 ## Macro functions space and size
 V_macro = FunctionSpace(macro_mesh, "Lagrange", 1)
@@ -148,12 +150,14 @@ if rank == 0:
     u_macro = TrialFunction(V_macro)
     phi_macro = TestFunction(V_macro)
 
-    a_macro = 0.5 * inner(kappa_macro * effective_cond_fn * grad(u_macro), 
-                            grad(phi_macro)) * dx_macro
+    a_macro = 0.5*inner(kappa_macro * effective_cond_fn * grad(u_macro), 
+                        grad(phi_macro)) * dx_macro
     a_macro += inner(rho_macro * effective_density_fn * u_macro, phi_macro) / dt * dx_macro
 
+    a_macro += growth_speed * latent_heat * u_macro * phi_macro * radius_fn * dx_macro
+
     f_macro = (inner(rho_macro * old_effective_density_fn * theta_old, phi_macro) / dt \
-            + f_stopper * inner(f_macro_prod, phi_macro)) * dx_macro  \
+            + inner(f_macro_prod, phi_macro)) * dx_macro \
             - 0.5*inner(kappa_macro * effective_cond_fn * grad(theta_old), 
                         grad(phi_macro)) * dx_macro
 
@@ -174,8 +178,11 @@ if rank == 0:
     average_temp_fn.assign(Constant(theta_start))
     radius_fn.assign(Constant(micro_radius))
 
-    new_values = np.interp(radius_fn.vector().get_local(), 
-                           eff_cond_array[:, 0], eff_cond_array[:, 1])
+    new_values = interpolate_conductivity(radius_fn.vector().get_local(), 
+                                                eff_cond_array[:, 0], 
+                                                eff_cond_array[:, 1], 
+                                                use_linear_interpolation, 
+                                                use_quadratic_interpolation) 
     effective_cond_fn.vector().set_local(new_values)
 
     micro_cell_volume = np.pi * radius_fn.vector().get_local()**2
@@ -223,8 +230,7 @@ while t_n <= T_int[1] - dt/8.0:
     ### Macro domain
     if rank == 0:
         print("Currently working on time step", t_n)
-        if t_n > prod_stop:
-            f_stopper.assign(0.0)
+        f_macro_prod.t = t_n
         
         ## Update previous data functions
         theta_old.assign(sol_fn)
@@ -342,19 +348,19 @@ while t_n <= T_int[1] - dt/8.0:
     if rank == 0:
         effective_data = np.concatenate(effective_data[1:])
 
-        average_temp_fn.vector().set_local(effective_data[:, 0])
+        average_temp_fn.vector().set_local(effective_data[:, 0] / rho_micro)
         radius_fn.vector().set_local(effective_data[:, 1])
 
         ## Compute energy and compare
         energy_array[energy_idx, 0] = t_n
-        expected_energy += dt * assemble(f_stopper * f_macro_prod * dx_macro)
+        expected_energy += dt * assemble(f_macro_prod * dx_macro)
         macro_energy = assemble(rho_macro * effective_density_fn * sol_fn * dx_macro)
         micro_energy = assemble(rho_micro * average_temp_fn * dx_macro)
         #micro_energy += dt * assemble(energy_flow * dx_macro)
-        print("Expected Energy:", expected_energy)
+        print("Produced Energy:", expected_energy)
         num_energy = macro_energy + micro_energy
         print("Numeric Energy:", num_energy)
-        print("Rel diff:", np.abs(expected_energy - (num_energy)) / expected_energy)
+        #print("Rel diff:", np.abs(expected_energy - (num_energy)) / expected_energy)
 
         energy_array[energy_idx, 1] = expected_energy
         energy_array[energy_idx, 2] = macro_energy
@@ -367,8 +373,6 @@ while t_n <= T_int[1] - dt/8.0:
                                                 eff_cond_array[:, 1], 
                                                 use_linear_interpolation,
                                                 use_quadratic_interpolation) 
-        np.interp(radius_fn.vector().get_local(), 
-                                eff_cond_array[:, 0], eff_cond_array[:, 1])
         effective_cond_fn.vector().set_local(new_values)
 
         old_effective_density_fn.assign(effective_density_fn)
