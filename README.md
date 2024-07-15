@@ -18,14 +18,14 @@ Usage:
 
 The main code is shown in ``Main.py``, to run the file you will need to use MPI, since
 the cell problems are expected to be distributed across multiple processes.
-To run the code with MPI using 8 processes is possible with the following command:
+To run the code with MPI using 8 processes, use the following command:
 ```
 mpirun -n 8 path_to_python path_to_Main.py
 ```
 
 The rest of the structure of this repository is as follows:
 - `MeshCreation`: Contains all the micro meshes used in the paper and the code to create them.
-- `Interpolation`: Contains the precomputed effective conductivity values for different resolutions.
+- `InterpolationData`: Contains the precomputed effective conductivity values for different resolutions.
 - `Utils` and `MicroProblems`: Contains code that implements the complete problem, micro-problems and 
  coupling of multiple processes.
 - All Python files with `_test.py` implement the convergence studies of the paper.
