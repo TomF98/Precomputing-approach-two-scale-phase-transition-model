@@ -1,7 +1,7 @@
 Implementation for the Paper: Precomputing approach for a two-scale phase transition model
 ==========================================================================================
 
-This repository contains the source codes for all simulations presented in the [paper](...).
+This repository contains the source codes for all simulations presented in the [paper](https://arxiv.org/abs/2407.21595).
 
 To run the code, the following packages are mandatory:
 
